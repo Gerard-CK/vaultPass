@@ -4,20 +4,22 @@
 const notify = new Notify(document.querySelector('#notify'));
 var resultList = document.getElementById('resultList');
 var searchInput = document.getElementById('vault-search');
-var searchRegex, vaultServerAdress, vaultToken, secretList;
+var currentUrl, vaultServerAdress, vaultToken, secretList;
+var currentTabId;
 
 async function mainLoaded() {
   var tabs = await browser.tabs.query({ active: true, currentWindow: true });
   for (let tabIndex = 0; tabIndex < tabs.length; tabIndex++) {
     var tab = tabs[tabIndex];
     if (tab.url) {
-      searchRegex = tab.url;
+      currentTabId = tab.id;
+      currentUrl = tab.url;
       break;
     }
   }
 
   if (searchInput.value.length != 0) {
-    searchRegex = searchInput.value;
+    currentUrl = searchInput.value;
   }
 
   vaultToken = (await browser.storage.local.get('vaultToken')).vaultToken;
@@ -36,13 +38,19 @@ async function mainLoaded() {
   if (!secretList) {
     secretList = [];
   }
-  querySecrets(searchRegex);
+  querySecrets(currentUrl);
 }
 
 async function querySecrets(searchString) {
+  if (searchString.length == 0) {
+    searchString = currentUrl;
+  }
+
   resultList.textContent = '';
   var promises = [];
   notify.clear();
+
+  let matches = 0;
   for (const secret of secretList) {
     promises.push(
       (async function () {
@@ -62,22 +70,23 @@ async function querySecrets(searchString) {
           });
           return;
         }
-        let anyMatch = false;
         for (const element of (await secretsInPath.json()).data.keys) {
           var pattern = new RegExp(element);
           var patternMatches = pattern.test(searchString);
+
           if (patternMatches) {
             const urlPath = `${vaultServerAdress}/v1/secret/data/vaultPass/${secret}${element}`;
             const credentials = await getCredentials(urlPath);
-            addCredentialsToList(credentials.data.data, element, resultList);
-            anyMatch = true;
+            const credentialsSets = extractCredentialsSets(credentials.data.data);
+
+            for (let item of credentialsSets) {
+              addCredentialsToList(item, element, resultList);
+
+              matches++;
+            }
+            
             notify.clear();
           }
-        }
-        if (!anyMatch) {
-          notify.info('No matching key found for this page.', {
-            removeOption: false,
-          });
         }
       })()
     );
@@ -85,7 +94,17 @@ async function querySecrets(searchString) {
 
   try {
     await Promise.all(promises);
+
+    if (matches > 0) {
+      chrome.action.setBadgeText({ text: `${matches}`, tabId: currentTabId });
+    } else {
+      chrome.action.setBadgeText({ text: ``, tabId: currentTabId });
+      notify.info('No matching key found for this page.', {
+        removeOption: false,
+      });
+    }
   } catch (err) {
+    chrome.action.setBadgeText({ text: ``, tabId: currentTabId });
     notify.clear().error(err.message);
   }
 }
@@ -95,6 +114,26 @@ const searchHandler = function (e) {
 };
 
 searchInput.addEventListener('input', searchHandler);
+
+function extractCredentialsSets(data) {
+  const keys = Object.keys(data);
+  let credentials = [];
+
+  for (let key of keys) {
+    if (key.startsWith('username')) {
+      let passwordField = 'password' + key.substring(8);
+      if (data[passwordField]) {
+        credentials.push(
+        { 
+          username: data[key],
+          password: data['password' + key.substring(8)]
+        });
+      }
+    }
+  }
+
+  return credentials;
+}
 
 function addCredentialsToList(credentials, credentialName, list) {
   const item = document.createElement('li');
