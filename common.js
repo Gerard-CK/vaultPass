@@ -17,3 +17,7 @@ function storePathComponents(storePath) {
     subPath: storeSubPath,
   };
 }
+
+if (!browser.browserAction) {
+    browser.browserAction = (chrome.browserAction) ?? chrome.action;
+}

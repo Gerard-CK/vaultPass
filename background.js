@@ -1,27 +1,35 @@
 /* eslint-disable no-console */
 /* global chrome */
 
-function storageGetterProvider(storageType) {
-  return function (key, defaultValue) {
-    return new Promise(function (resolve, reject) {
-      try {
-        chrome.storage[storageType].get([key], function (result) {
-          const value = result[key] || defaultValue || null;
-          resolve(value);
-        });
-      } catch (error) {
-        reject(error);
-      }
-    });
-  };
+const idealTokenTTL = '24h';
+
+var tokenRenewalIntervalId;
+
+if (!chrome.browserAction) {
+  chrome.browserAction = chrome.action
 }
 
 const storage = {
+  storageGetterProvider: (storageType) => {
+    return function (key, defaultValue) {
+      return new Promise(function (resolve, reject) {
+        try {
+          chrome.storage[storageType].get([key], function (result) {
+            const value = result[key] || defaultValue || null;
+            resolve(value);
+          });
+        } catch (error) {
+          reject(error);
+        }
+      });
+    };
+  },
+
   local: {
-    get: storageGetterProvider('local'),
+    get: (key, defaultValue) => storage.storageGetterProvider('local')(key, defaultValue),
   },
   sync: {
-    get: storageGetterProvider('sync'),
+    get: (key, defaultValue) => storage.storageGetterProvider('sync')(key, defaultValue),
   },
 };
 
@@ -32,20 +40,19 @@ class Vault {
     this.base = `${this.address}/v1`;
   }
 
-  async request(method, endpoint) {
+  async request(method, endpoint, content = null) {
     const res = await fetch(this.base + endpoint, {
       method: method.toUpperCase(),
       headers: {
         'X-Vault-Token': this.token,
         'Content-Type': 'application/json',
       },
+      body: content != null ? JSON.stringify(content) : null
     });
 
     if (!res.ok) throw new Error(`Error calling: ${method.toUpperCase()} ${this.base}${endpoint} -> HTTP ${res.status} - ${res.statusText}`);
 
-    const json = await res.json();
-
-    return json;
+    return await res.json();
   }
 
   list(endpoint) {
@@ -54,6 +61,10 @@ class Vault {
 
   get(endpoint) {
     return this.request('GET', endpoint);
+  }
+
+  post(endpoint, content) {
+    return this.request('POST', endpoint, content);
   }
 }
 
@@ -85,7 +96,7 @@ async function autoFillSecrets(message, sender) {
   const storePath = await storage.sync.get('storePath');
   const storeComponents = storePathComponents(storePath);
 
-  if (!vaultAddress || !vaultAddress) return;
+  if (!vaultToken || !vaultAddress) return;
 
   const url = new URL(sender.tab.url);
   const hostname = clearHostname(url.hostname);
@@ -117,8 +128,52 @@ async function autoFillSecrets(message, sender) {
     }
   }
   if (loginCount > 0) {
-    chrome.action.setBadgeText({ text: '*', tabId: sender.tab.id });
+    chrome.browserAction.setBadgeText({ text: '*', tabId: sender.tab.id });
   }
+}
+
+async function renewToken(force = false) {
+  const vaultToken = await storage.local.get('vaultToken');
+  const vaultAddress = await storage.sync.get('vaultAddress');
+
+  if (vaultToken) {
+    try {
+      const vault = new Vault(vaultToken, vaultAddress);
+      const token = await vault.get('/auth/token/lookup-self');
+
+      console.log(`Token will expire in ${token.data.ttl} seconds`);
+      if (token.data.ttl > 3600) {
+        refreshTokenListener(1800000);
+      } else {
+        refreshTokenListener((token.data.ttl / 2) * 1000);
+      }
+        
+      if (force || token.data.ttl <= 60) {
+        console.log('Renewing Token...');
+        const newToken = await vault.post('/auth/token/renew-self', { increment: idealTokenTTL });
+        console.log(`Token renewed. It will expire in ${newToken.auth.lease_duration} seconds`);
+      }
+
+      await chrome.browserAction.setBadgeBackgroundColor({ color: '#1c98ed' });
+    }
+    catch (e) {
+      console.log(e);
+      await chrome.browserAction.setBadgeBackgroundColor({ color: '#FF0000' });
+      await chrome.browserAction.setBadgeText({ text: `!` });
+      
+      refreshTokenListener();
+    }
+  }
+}
+
+function refreshTokenListener(interval = 30000) {
+  if (tokenRenewalIntervalId) {
+    clearInterval(tokenRenewalIntervalId);
+  }
+
+  tokenRenewalIntervalId = setInterval(async () => {
+    await renewToken();
+  }, interval);
 }
 
 chrome.runtime.onMessage.addListener(function (message, sender) {
@@ -126,3 +181,27 @@ chrome.runtime.onMessage.addListener(function (message, sender) {
     autoFillSecrets(message, sender).catch(console.error);
   }
 });
+
+chrome.runtime.onInstalled.addListener(() => {
+  refreshTokenListener();
+
+  chrome.idle.onStateChanged.addListener(async function(newState) {
+    if (newState === "locked") {
+      await renewToken(true);
+    }
+  });
+});
+
+chrome.runtime.onStartup.addListener(() => {
+  refreshTokenListener();
+
+  chrome.idle.onStateChanged.addListener(async function(newState) {
+    if (newState === "locked") {
+      await renewToken(true);
+    }
+  });
+});
+
+chrome.runtime.onSuspend.addListener(async (l, ev) => {
+  await renewToken(true);
+})

@@ -40,7 +40,7 @@ async function mainLoaded() {
   if (!secretList) {
     secretList = [];
   }
-  querySecrets(currentUrl, searchInput.value.length != 0);
+  await querySecrets(currentUrl, searchInput.value.length !== 0);
 }
 
 async function querySecrets(searchString, manualSearch) {
@@ -71,7 +71,7 @@ async function querySecrets(searchString, manualSearch) {
         if (!secretsInPath.ok) {
           if (secretsInPath.status !== 404) {
             notify.error(
-              `Token is not able to read ${secret}... Try re-login`,
+              `Unable to read ${secret}... Try re-login`,
               {
                 removeOption: true,
               }
@@ -107,9 +107,9 @@ async function querySecrets(searchString, manualSearch) {
     await Promise.all(promises);
 
     if (matches > 0) {
-      browser.action.setBadgeText({ text: `${matches}`, tabId: currentTabId });
+      browser.browserAction.setBadgeText({ text: `${matches}`, tabId: currentTabId });
     } else {
-      browser.action.setBadgeText({ text: '', tabId: currentTabId });
+      browser.browserAction.setBadgeText({ text: '', tabId: currentTabId });
       if (!manualSearch) {
         notify.info('No matching key found for this page.', {
           removeOption: false,
@@ -121,7 +121,7 @@ async function querySecrets(searchString, manualSearch) {
       }
     }
   } catch (err) {
-    browser.action.setBadgeText({ text: '', tabId: currentTabId });
+    browser.browserAction.setBadgeText({ text: '', tabId: currentTabId });
     notify.clear().error(err.message);
   }
 }
@@ -239,7 +239,7 @@ async function fillCredentialsInBrowser(username, password) {
         message: 'fill_creds',
         username: username,
         password: password,
-        isUserTriggered: true,
+        isUserTriggered: true
       });
       break;
     }
